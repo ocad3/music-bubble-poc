@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>Music Bubble POC V0.6.1</title>
+<title>Music Bubble POC V0.6.2</title>
 
 <style>
 body{
@@ -26,10 +26,6 @@ h1{
     margin-bottom:14px;
 }
 
-audio{
-    width:100%;
-}
-
 .value{
     font-weight:bold;
 }
@@ -40,6 +36,10 @@ audio{
 
 .state-playing{
     color:#8fff9b;
+}
+
+.state-loading{
+    color:#86caff;
 }
 
 .state-ended{
@@ -76,8 +76,15 @@ audio{
 <h1>Music Bubble</h1>
 
 <div class="box">
-    <div>POC V0.6.1 — Generic Bubble + Audio Unlock</div>
-    <div id="status">Initialisation...</div>
+
+    <div>
+        POC V0.6.2 — Web Audio Engine
+    </div>
+
+    <div id="status">
+        Initialisation...
+    </div>
+
 </div>
 
 
@@ -85,13 +92,15 @@ audio{
     class="box"
     id="audioUnlockBox"
 >
+
     <button id="audioUnlockButton">
         🔊 Enable Audio
     </button>
 
     <div id="audioUnlockMessage">
-        Un seul clic pour autoriser la lecture automatique des Music Bubbles.
+        Un seul clic pour activer le moteur audio Music Bubble.
     </div>
+
 </div>
 
 
@@ -160,7 +169,7 @@ audio{
     </div>
 
     <div>
-        Position cible:
+        Position:
         <span
             class="value"
             id="position"
@@ -168,17 +177,6 @@ audio{
             --
         </span>
     </div>
-
-</div>
-
-
-<div class="box">
-
-    <audio
-        id="player"
-        controls
-        preload="auto">
-    </audio>
 
 </div>
 
@@ -196,13 +194,10 @@ const params =
 
 
 const receiver =
-    params.get("receiver");
-
-
-const player =
-    document.getElementById(
-        "player"
+    params.get(
+        "receiver"
     );
+
 
 
 const statusEl =
@@ -253,12 +248,6 @@ const positionEl =
     );
 
 
-const audioUnlockBox =
-    document.getElementById(
-        "audioUnlockBox"
-    );
-
-
 const audioUnlockButton =
     document.getElementById(
         "audioUnlockButton"
@@ -272,25 +261,36 @@ const audioUnlockMessage =
 
 
 
+let audioContext = null;
+
+let gainNode = null;
+
+let currentSource = null;
+
+let currentBuffer = null;
+
 let currentSessionId = "";
 
-let pendingSeek = null;
+let currentTrackUrl = "";
+
+let sourceStartContextTime = 0;
+
+let sourceStartOffset = 0;
+
+let audioUnlocked = false;
+
+let lastData = null;
 
 let lastGoodUpdate = 0;
 
 let lastSyncAt = 0;
 
-let lastData = null;
+let loadGeneration = 0;
 
 
-// IMPORTANT:
-//
-// FALSE = le navigateur intégré n'a pas encore
-// reçu d'interaction utilisateur.
-//
-// TRUE = l'utilisateur a cliqué Enable Audio.
-//
-let audioUnlocked = false;
+// Cache des morceaux déjà téléchargés.
+const bufferCache =
+    new Map();
 
 
 
@@ -315,6 +315,16 @@ function formatTime(
     seconds
 )
 {
+    if (
+        !Number.isFinite(
+            seconds
+        )
+    )
+    {
+        return "--";
+    }
+
+
     seconds =
         Math.max(
             0,
@@ -398,6 +408,7 @@ function setDisplayState(
 
     stateEl.classList.remove(
         "state-playing",
+        "state-loading",
         "state-ended",
         "state-none"
     );
@@ -409,6 +420,15 @@ function setDisplayState(
     {
         stateEl.classList.add(
             "state-playing"
+        );
+    }
+
+    else if (
+        state === "LOADING"
+    )
+    {
+        stateEl.classList.add(
+            "state-loading"
         );
     }
 
@@ -431,7 +451,239 @@ function setDisplayState(
 
 
 
-function updatePassiveDisplay(
+function stopCurrentSource()
+{
+    if (
+        currentSource
+    )
+    {
+        try
+        {
+            currentSource.stop();
+        }
+
+        catch (
+            error
+        )
+        {
+        }
+
+
+        try
+        {
+            currentSource.disconnect();
+        }
+
+        catch (
+            error
+        )
+        {
+        }
+
+
+        currentSource =
+            null;
+    }
+}
+
+
+
+function getLocalPlaybackPosition()
+{
+    if (
+        !audioContext
+        ||
+        !currentSource
+    )
+    {
+        return sourceStartOffset;
+    }
+
+
+    return (
+        sourceStartOffset
+        +
+        (
+            audioContext.currentTime
+            -
+            sourceStartContextTime
+        )
+    );
+}
+
+
+
+async function getAudioBuffer(
+    url
+)
+{
+    if (
+        bufferCache.has(
+            url
+        )
+    )
+    {
+        return bufferCache.get(
+            url
+        );
+    }
+
+
+    const response =
+        await fetch(
+            url,
+            {
+                cache:
+                    "force-cache"
+            }
+        );
+
+
+    if (
+        !response.ok
+    )
+    {
+        throw new Error(
+            "Audio HTTP "
+            +
+            response.status
+        );
+    }
+
+
+    const arrayBuffer =
+        await response.arrayBuffer();
+
+
+    const decoded =
+        await audioContext.decodeAudioData(
+            arrayBuffer
+        );
+
+
+    bufferCache.set(
+        url,
+        decoded
+    );
+
+
+    return decoded;
+}
+
+
+
+function startBufferAt(
+    buffer,
+    position
+)
+{
+    stopCurrentSource();
+
+
+    if (
+        !audioContext
+        ||
+        audioContext.state !== "running"
+    )
+    {
+        return;
+    }
+
+
+    if (
+        position >= buffer.duration
+    )
+    {
+        sourceStartOffset =
+            buffer.duration;
+
+
+        setDisplayState(
+            "ENDED"
+        );
+
+
+        statusEl.textContent =
+            "Session terminée";
+
+
+        return;
+    }
+
+
+    position =
+        clamp(
+            position,
+            0,
+            buffer.duration
+        );
+
+
+    const source =
+        audioContext.createBufferSource();
+
+
+    source.buffer =
+        buffer;
+
+
+    source.connect(
+        gainNode
+    );
+
+
+    currentSource =
+        source;
+
+
+    sourceStartOffset =
+        position;
+
+
+    sourceStartContextTime =
+        audioContext.currentTime;
+
+
+    source.start(
+        0,
+        position
+    );
+
+
+    setDisplayState(
+        "PLAYING"
+    );
+
+
+    statusEl.textContent =
+        "Receiver connecté — session synchronisée";
+
+
+    source.onended =
+        () =>
+        {
+            if (
+                currentSource === source
+            )
+            {
+                currentSource =
+                    null;
+
+
+                setDisplayState(
+                    "ENDED"
+                );
+
+
+                statusEl.textContent =
+                    "Session terminée";
+            }
+        };
+}
+
+
+
+async function loadSession(
     data
 )
 {
@@ -453,135 +705,290 @@ function updatePassiveDisplay(
         !trackUrl
     )
     {
+        stopCurrentSource();
+
+
+        currentSessionId =
+            "";
+
+
+        currentTrackUrl =
+            "";
+
+
+        currentBuffer =
+            null;
+
+
         setDisplayState(
             "NO TRACK"
         );
+
 
         return;
     }
 
 
-    const expected =
-        expectedPosition(
-            data
-        );
+    currentSessionId =
+        sessionId;
 
 
-    if (
-        sessionId === currentSessionId
-        &&
-        Number.isFinite(
-            player.duration
-        )
-        &&
-        player.duration > 0
-    )
+    currentTrackUrl =
+        trackUrl;
+
+
+    const myGeneration =
+        ++loadGeneration;
+
+
+    stopCurrentSource();
+
+
+    setDisplayState(
+        "LOADING"
+    );
+
+
+    statusEl.textContent =
+        "Chargement du morceau...";
+
+
+    try
     {
+        const buffer =
+            await getAudioBuffer(
+                trackUrl
+            );
+
+
+        if (
+            myGeneration !==
+            loadGeneration
+        )
+        {
+            return;
+        }
+
+
+        if (
+            !lastData
+            ||
+            lastData.sessionId
+            !==
+            sessionId
+        )
+        {
+            return;
+        }
+
+
+        currentBuffer =
+            buffer;
+
+
+        const position =
+            expectedPosition(
+                lastData
+            );
+
+
         positionEl.textContent =
             formatTime(
                 Math.min(
-                    expected,
-                    player.duration
+                    position,
+                    buffer.duration
                 )
             )
             +
             " / "
             +
             formatTime(
-                player.duration
+                buffer.duration
             );
 
 
         if (
-            expected >= player.duration
+            audioUnlocked
         )
         {
-            setDisplayState(
-                "ENDED"
+            startBufferAt(
+                buffer,
+                position
             );
         }
 
         else
         {
-            setDisplayState(
-                "PLAYING"
-            );
+            statusEl.textContent =
+                "Clique une fois sur Enable Audio.";
         }
-
-
-        return;
     }
 
-
-    setDisplayState(
-        "PLAYING"
-    );
-}
-
-
-
-function markAudioUnlocked()
-{
-    audioUnlocked =
-        true;
+    catch (
+        error
+    )
+    {
+        console.error(
+            error
+        );
 
 
-    audioUnlockButton.textContent =
-        "🔊 Audio Enabled";
+        setDisplayState(
+            "NO TRACK"
+        );
 
 
-    audioUnlockMessage.textContent =
-        "Audio déverrouillé — les changements de Music Bubble peuvent maintenant se lancer automatiquement.";
-}
-
-
-
-function hideAudioUnlock()
-{
-    audioUnlockBox.style.display =
-        "none";
+        statusEl.textContent =
+            "Erreur de chargement audio";
+    }
 }
 
 
 
 async function unlockAudio()
 {
-    markAudioUnlocked();
-
-
-    // Si une musique est déjà chargée,
-    // le clic utilisateur lance directement celle-ci.
-    if (
-        player.src
-        &&
-        player.src !== ""
-    )
+    try
     {
-        try
-        {
-            await player.play();
-
-
-            statusEl.textContent =
-                "Audio activé — session synchronisée";
-
-
-            hideAudioUnlock();
-        }
-
-        catch (
-            error
+        if (
+            !audioContext
         )
         {
+            const AudioContextClass =
+                window.AudioContext
+                ||
+                window.webkitAudioContext;
+
+
+            audioContext =
+                new AudioContextClass();
+
+
+            gainNode =
+                audioContext.createGain();
+
+
+            gainNode.gain.value =
+                0;
+
+
+            gainNode.connect(
+                audioContext.destination
+            );
+
+
+            // Petit buffer silencieux utilisé uniquement
+            // pour amorcer le moteur audio dans le geste utilisateur.
+            const silentBuffer =
+                audioContext.createBuffer(
+                    1,
+                    1,
+                    audioContext.sampleRate
+                );
+
+
+            const silentSource =
+                audioContext.createBufferSource();
+
+
+            silentSource.buffer =
+                silentBuffer;
+
+
+            silentSource.connect(
+                gainNode
+            );
+
+
+            silentSource.start();
+        }
+
+
+        await audioContext.resume();
+
+
+        if (
+            audioContext.state ===
+            "running"
+        )
+        {
+            audioUnlocked =
+                true;
+
+
+            audioUnlockButton.textContent =
+                "🔊 Audio Enabled";
+
+
             audioUnlockMessage.textContent =
-                "Audio autorisé. Si nécessaire, reclique une fois lorsque tu es dans une Music Bubble.";
+                "Moteur audio activé. Les prochains changements doivent être automatiques.";
+
+
+            if (
+                lastData
+            )
+            {
+                const volume =
+                    clamp(
+                        Number(
+                            lastData.volume
+                        )
+                        ||
+                        0,
+
+                        0,
+                        1
+                    );
+
+
+                gainNode.gain.setValueAtTime(
+                    volume,
+                    audioContext.currentTime
+                );
+
+
+                if (
+                    currentBuffer
+                )
+                {
+                    startBufferAt(
+                        currentBuffer,
+                        expectedPosition(
+                            lastData
+                        )
+                    );
+                }
+
+                else if (
+                    lastData.sessionId
+                    &&
+                    lastData.trackUrl
+                )
+                {
+                    loadSession(
+                        lastData
+                    );
+                }
+            }
+        }
+
+        else
+        {
+            statusEl.textContent =
+                "Le viewer n'a pas autorisé Web Audio.";
         }
     }
 
-    else
+    catch (
+        error
+    )
     {
-        audioUnlockMessage.textContent =
-            "Audio prêt. Approche-toi d'une Music Bubble pour charger une musique.";
+        console.error(
+            error
+        );
+
+
+        statusEl.textContent =
+            "Impossible d'activer Web Audio.";
     }
 }
 
@@ -594,248 +1001,42 @@ audioUnlockButton.addEventListener(
 
 
 
-function seekAndPlay(
-    position
-)
-{
-    if (
-        !Number.isFinite(
-            player.duration
-        )
-        ||
-        player.duration <= 0
-    )
-    {
-        pendingSeek =
-            position;
-
-        return;
-    }
-
-
-    if (
-        position
-        >=
-        player.duration
-    )
-    {
-        player.currentTime =
-            Math.max(
-                0,
-                player.duration
-                -
-                0.05
-            );
-
-
-        player.pause();
-
-
-        statusEl.textContent =
-            "Session terminée";
-
-
-        return;
-    }
-
-
-    player.currentTime =
-        clamp(
-            position,
-            0,
-            player.duration
-        );
-
-
-    pendingSeek =
-        null;
-
-
-    player
-        .play()
-        .then(
-            () =>
-            {
-                if (
-                    audioUnlocked
-                )
-                {
-                    hideAudioUnlock();
-                }
-            }
-        )
-        .catch(
-            () =>
-            {
-                statusEl.textContent =
-                    "Clique une fois sur Enable Audio.";
-
-                audioUnlockBox.style.display =
-                    "block";
-            }
-        );
-}
-
-
-
-player.addEventListener(
-    "loadedmetadata",
-
-    () =>
-    {
-        if (
-            pendingSeek !== null
-        )
-        {
-            const target =
-                pendingSeek;
-
-
-            pendingSeek =
-                null;
-
-
-            seekAndPlay(
-                target
-            );
-        }
-
-
-        if (
-            lastData
-        )
-        {
-            updatePassiveDisplay(
-                lastData
-            );
-        }
-    }
-);
-
-
-
-player.addEventListener(
-    "ended",
-
-    () =>
-    {
-        setDisplayState(
-            "ENDED"
-        );
-    }
-);
-
-
-
-player.addEventListener(
-    "play",
-
-    () =>
-    {
-        if (
-            audioUnlocked
-        )
-        {
-            hideAudioUnlock();
-        }
-    }
-);
-
-
-
-function switchSession(
+function updateDisplay(
     data
 )
 {
-    currentSessionId =
-        data.sessionId
+    broadcasterEl.textContent =
+        data.broadcasterName
+
+        ?
+
+        decodeURIComponent(
+            data.broadcasterName
+        )
+
+        :
+
+        "NONE";
+
+
+    trackEl.textContent =
+        data.trackTitle
+
+        ?
+
+        decodeURIComponent(
+            data.trackTitle
+        )
+
+        :
+
+        "NONE";
+
+
+    zoneEl.textContent =
+        data.zone
         ||
-        "";
-
-
-    const trackUrl =
-        data.trackUrl
-        ||
-        "";
-
-
-    if (
-        !trackUrl
-    )
-    {
-        player.pause();
-
-
-        player.removeAttribute(
-            "src"
-        );
-
-
-        player.load();
-
-
-        statusEl.textContent =
-            "Aucune session musicale active";
-
-
-        return;
-    }
-
-
-    const position =
-        expectedPosition(
-            data
-        );
-
-
-    pendingSeek =
-        position;
-
-
-    player.src =
-        trackUrl;
-
-
-    player.load();
-
-
-    statusEl.textContent =
-        "Changement de session...";
-}
-
-
-
-function applyState(
-    data
-)
-{
-    lastData =
-        data;
-
-
-    const volume =
-        clamp(
-            Number(
-                data.volume
-            )
-            ||
-            0,
-
-            0,
-            1
-        );
-
-
-    player.volume =
-        volume;
-
-
-    volumeEl.textContent =
-        Math.round(
-            volume
-            *
-            100
-        );
+        "NONE";
 
 
     distanceEl.textContent =
@@ -859,40 +1060,39 @@ function applyState(
         "--";
 
 
-    zoneEl.textContent =
-        data.zone
-        ||
-        "NONE";
+    const volume =
+        clamp(
+            Number(
+                data.volume
+            )
+            ||
+            0,
+
+            0,
+            1
+        );
 
 
-    broadcasterEl.textContent =
-
-        data.broadcasterName
-
-        ?
-
-        decodeURIComponent(
-            data.broadcasterName
-        )
-
-        :
-
-        "NONE";
+    volumeEl.textContent =
+        Math.round(
+            volume
+            *
+            100
+        );
 
 
-    trackEl.textContent =
-
-        data.trackTitle
-
-        ?
-
-        decodeURIComponent(
-            data.trackTitle
-        )
-
-        :
-
-        "NONE";
+    if (
+        audioContext
+        &&
+        gainNode
+    )
+    {
+        gainNode.gain.setTargetAtTime(
+            volume,
+            audioContext.currentTime,
+            0.05
+        );
+    }
 
 
     const position =
@@ -901,10 +1101,115 @@ function applyState(
         );
 
 
-    positionEl.textContent =
-        formatTime(
-            position
+    if (
+        currentBuffer
+    )
+    {
+        positionEl.textContent =
+            formatTime(
+                Math.min(
+                    position,
+                    currentBuffer.duration
+                )
+            )
+            +
+            " / "
+            +
+            formatTime(
+                currentBuffer.duration
+            );
+    }
+
+    else
+    {
+        positionEl.textContent =
+            formatTime(
+                position
+            );
+    }
+}
+
+
+
+function checkSynchronization(
+    data
+)
+{
+    if (
+        !audioUnlocked
+        ||
+        !audioContext
+        ||
+        !currentBuffer
+        ||
+        !currentSource
+    )
+    {
+        return;
+    }
+
+
+    if (
+        Date.now()
+        -
+        lastSyncAt
+        <
+        2000
+    )
+    {
+        return;
+    }
+
+
+    lastSyncAt =
+        Date.now();
+
+
+    const expected =
+        expectedPosition(
+            data
         );
+
+
+    const local =
+        getLocalPlaybackPosition();
+
+
+    const drift =
+        Math.abs(
+            expected
+            -
+            local
+        );
+
+
+    if (
+        drift > 2
+        &&
+        expected <
+        currentBuffer.duration
+    )
+    {
+        startBufferAt(
+            currentBuffer,
+            expected
+        );
+    }
+}
+
+
+
+function applyState(
+    data
+)
+{
+    lastData =
+        data;
+
+
+    updateDisplay(
+        data
+    );
 
 
     const sessionId =
@@ -913,78 +1218,77 @@ function applyState(
         "";
 
 
+    const trackUrl =
+        data.trackUrl
+        ||
+        "";
+
+
     if (
-        sessionId
-        &&
+        !sessionId
+        ||
+        !trackUrl
+    )
+    {
+        if (
+            currentSessionId
+            !==
+            ""
+        )
+        {
+            loadGeneration++;
+
+
+            stopCurrentSource();
+
+
+            currentBuffer =
+                null;
+
+
+            currentSessionId =
+                "";
+
+
+            currentTrackUrl =
+                "";
+        }
+
+
+        setDisplayState(
+            "NO TRACK"
+        );
+
+
+        lastGoodUpdate =
+            Date.now();
+
+
+        return;
+    }
+
+
+    if (
         sessionId
         !==
         currentSessionId
+        ||
+        trackUrl
+        !==
+        currentTrackUrl
     )
     {
-        switchSession(
+        loadSession(
             data
         );
     }
 
-    else if (
-        sessionId
-        &&
-        player.src
-        &&
-        Date.now()
-        -
-        lastSyncAt
-        >
-        2000
-    )
+    else
     {
-        if (
-            Number.isFinite(
-                player.duration
-            )
-            &&
-            position
-            <
-            player.duration
-        )
-        {
-            const drift =
-                Math.abs(
-                    player.currentTime
-                    -
-                    position
-                );
-
-
-            if (
-                drift
-                >
-                2.0
-            )
-            {
-                player.currentTime =
-                    position;
-            }
-        }
-
-
-        lastSyncAt =
-            Date.now();
+        checkSynchronization(
+            data
+        );
     }
-
-
-    if (
-        sessionId
-    )
-    {
-        statusEl.textContent =
-            "Receiver connecté — session synchronisée";
-    }
-
-
-    updatePassiveDisplay(
-        data
-    );
 
 
     lastGoodUpdate =
@@ -1001,10 +1305,6 @@ async function refreshState()
     {
         statusEl.textContent =
             "Aucune URL Receiver reçue.";
-
-
-        player.volume =
-            0;
 
 
         return;
@@ -1065,6 +1365,11 @@ async function refreshState()
         error
     )
     {
+        console.error(
+            error
+        );
+
+
         statusEl.textContent =
             "Receiver inaccessible";
 
@@ -1077,8 +1382,18 @@ async function refreshState()
             2000
         )
         {
-            player.volume =
-                0;
+            if (
+                gainNode
+                &&
+                audioContext
+            )
+            {
+                gainNode.gain.setTargetAtTime(
+                    0,
+                    audioContext.currentTime,
+                    0.05
+                );
+            }
 
 
             volumeEl.textContent =
