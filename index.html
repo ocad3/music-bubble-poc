@@ -3,8 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-
-<title>Music Bubble POC V0.6.2</title>
+<title>Music Bubble POC V0.4.2</title>
 
 <style>
 body{
@@ -14,60 +13,19 @@ body{
     color:white;
     font-family:Arial,sans-serif;
 }
-
-h1{
-    margin-top:0;
-}
-
+h1{margin-top:0}
 .box{
     padding:16px;
     background:#1d1d24;
     border-radius:12px;
     margin-bottom:14px;
 }
-
-.value{
-    font-weight:bold;
-}
-
-#status{
-    opacity:.85;
-}
-
-.state-playing{
-    color:#8fff9b;
-}
-
-.state-loading{
-    color:#86caff;
-}
-
-.state-ended{
-    color:#ffca6a;
-}
-
-.state-none{
-    color:#bcbcbc;
-}
-
-#audioUnlockBox{
-    text-align:center;
-}
-
-#audioUnlockButton{
-    padding:14px 22px;
-    font-size:16px;
-    font-weight:bold;
-    border:0;
-    border-radius:10px;
-    cursor:pointer;
-}
-
-#audioUnlockMessage{
-    margin-top:10px;
-    opacity:.75;
-    font-size:13px;
-}
+audio{width:100%}
+.value{font-weight:bold}
+#status{opacity:.85}
+.state-playing{color:#8fff9b}
+.state-ended{color:#ffca6a}
+.state-none{color:#bcbcbc}
 </style>
 </head>
 
@@ -76,110 +34,54 @@ h1{
 <h1>Music Bubble</h1>
 
 <div class="box">
-
-    <div>
-        POC V0.6.2 — Web Audio Engine
-    </div>
-
-    <div id="status">
-        Initialisation...
-    </div>
-
+    <div>POC V0.4.2 — Session Sync + Passive Status</div>
+    <div id="status">Initialisation...</div>
 </div>
-
-
-<div
-    class="box"
-    id="audioUnlockBox"
->
-
-    <button id="audioUnlockButton">
-        🔊 Enable Audio
-    </button>
-
-    <div id="audioUnlockMessage">
-        Un seul clic pour activer le moteur audio Music Bubble.
-    </div>
-
-</div>
-
 
 <div class="box">
-
     <div>
         État:
-        <span
-            class="value state-none"
-            id="playState"
-        >
-            NO TRACK
-        </span>
+        <span class="value state-none" id="playState">NO TRACK</span>
     </div>
 
     <div>
         Broadcaster:
-        <span
-            class="value"
-            id="broadcaster"
-        >
-            NONE
-        </span>
+        <span class="value" id="broadcaster">NONE</span>
     </div>
 
     <div>
         Track:
-        <span
-            class="value"
-            id="track"
-        >
-            NONE
-        </span>
+        <span class="value" id="track">NONE</span>
     </div>
 
     <div>
         Zone:
-        <span
-            class="value"
-            id="zone"
-        >
-            NONE
-        </span>
+        <span class="value" id="zone">NONE</span>
     </div>
 
     <div>
         Distance:
-        <span
-            class="value"
-            id="distance"
-        >
-            --
-        </span>
-        m
+        <span class="value" id="distance">--</span> m
     </div>
 
     <div>
         Volume:
-        <span
-            class="value"
-            id="volume"
-        >
-            0
-        </span>
-        %
+        <span class="value" id="volume">0</span> %
     </div>
 
     <div>
-        Position:
-        <span
-            class="value"
-            id="position"
-        >
-            --
-        </span>
+        Position cible:
+        <span class="value" id="position">--</span>
     </div>
-
 </div>
 
+<div class="box">
+    <audio
+        id="player"
+        controls
+        preload="auto">
+    </audio>
+</div>
 
 <script>
 
@@ -194,10 +96,13 @@ const params =
 
 
 const receiver =
-    params.get(
-        "receiver"
-    );
+    params.get("receiver");
 
+
+const player =
+    document.getElementById(
+        "player"
+    );
 
 
 const statusEl =
@@ -248,49 +153,15 @@ const positionEl =
     );
 
 
-const audioUnlockButton =
-    document.getElementById(
-        "audioUnlockButton"
-    );
-
-
-const audioUnlockMessage =
-    document.getElementById(
-        "audioUnlockMessage"
-    );
-
-
-
-let audioContext = null;
-
-let gainNode = null;
-
-let currentSource = null;
-
-let currentBuffer = null;
-
 let currentSessionId = "";
 
-let currentTrackUrl = "";
-
-let sourceStartContextTime = 0;
-
-let sourceStartOffset = 0;
-
-let audioUnlocked = false;
-
-let lastData = null;
+let pendingSeek = null;
 
 let lastGoodUpdate = 0;
 
 let lastSyncAt = 0;
 
-let loadGeneration = 0;
-
-
-// Cache des morceaux déjà téléchargés.
-const bufferCache =
-    new Map();
+let lastData = null;
 
 
 
@@ -315,16 +186,6 @@ function formatTime(
     seconds
 )
 {
-    if (
-        !Number.isFinite(
-            seconds
-        )
-    )
-    {
-        return "--";
-    }
-
-
     seconds =
         Math.max(
             0,
@@ -408,7 +269,6 @@ function setDisplayState(
 
     stateEl.classList.remove(
         "state-playing",
-        "state-loading",
         "state-ended",
         "state-none"
     );
@@ -420,15 +280,6 @@ function setDisplayState(
     {
         stateEl.classList.add(
             "state-playing"
-        );
-    }
-
-    else if (
-        state === "LOADING"
-    )
-    {
-        stateEl.classList.add(
-            "state-loading"
         );
     }
 
@@ -451,239 +302,7 @@ function setDisplayState(
 
 
 
-function stopCurrentSource()
-{
-    if (
-        currentSource
-    )
-    {
-        try
-        {
-            currentSource.stop();
-        }
-
-        catch (
-            error
-        )
-        {
-        }
-
-
-        try
-        {
-            currentSource.disconnect();
-        }
-
-        catch (
-            error
-        )
-        {
-        }
-
-
-        currentSource =
-            null;
-    }
-}
-
-
-
-function getLocalPlaybackPosition()
-{
-    if (
-        !audioContext
-        ||
-        !currentSource
-    )
-    {
-        return sourceStartOffset;
-    }
-
-
-    return (
-        sourceStartOffset
-        +
-        (
-            audioContext.currentTime
-            -
-            sourceStartContextTime
-        )
-    );
-}
-
-
-
-async function getAudioBuffer(
-    url
-)
-{
-    if (
-        bufferCache.has(
-            url
-        )
-    )
-    {
-        return bufferCache.get(
-            url
-        );
-    }
-
-
-    const response =
-        await fetch(
-            url,
-            {
-                cache:
-                    "force-cache"
-            }
-        );
-
-
-    if (
-        !response.ok
-    )
-    {
-        throw new Error(
-            "Audio HTTP "
-            +
-            response.status
-        );
-    }
-
-
-    const arrayBuffer =
-        await response.arrayBuffer();
-
-
-    const decoded =
-        await audioContext.decodeAudioData(
-            arrayBuffer
-        );
-
-
-    bufferCache.set(
-        url,
-        decoded
-    );
-
-
-    return decoded;
-}
-
-
-
-function startBufferAt(
-    buffer,
-    position
-)
-{
-    stopCurrentSource();
-
-
-    if (
-        !audioContext
-        ||
-        audioContext.state !== "running"
-    )
-    {
-        return;
-    }
-
-
-    if (
-        position >= buffer.duration
-    )
-    {
-        sourceStartOffset =
-            buffer.duration;
-
-
-        setDisplayState(
-            "ENDED"
-        );
-
-
-        statusEl.textContent =
-            "Session terminée";
-
-
-        return;
-    }
-
-
-    position =
-        clamp(
-            position,
-            0,
-            buffer.duration
-        );
-
-
-    const source =
-        audioContext.createBufferSource();
-
-
-    source.buffer =
-        buffer;
-
-
-    source.connect(
-        gainNode
-    );
-
-
-    currentSource =
-        source;
-
-
-    sourceStartOffset =
-        position;
-
-
-    sourceStartContextTime =
-        audioContext.currentTime;
-
-
-    source.start(
-        0,
-        position
-    );
-
-
-    setDisplayState(
-        "PLAYING"
-    );
-
-
-    statusEl.textContent =
-        "Receiver connecté — session synchronisée";
-
-
-    source.onended =
-        () =>
-        {
-            if (
-                currentSource === source
-            )
-            {
-                currentSource =
-                    null;
-
-
-                setDisplayState(
-                    "ENDED"
-                );
-
-
-                statusEl.textContent =
-                    "Session terminée";
-            }
-        };
-}
-
-
-
-async function loadSession(
+function updatePassiveDisplay(
     data
 )
 {
@@ -705,338 +324,283 @@ async function loadSession(
         !trackUrl
     )
     {
-        stopCurrentSource();
-
-
-        currentSessionId =
-            "";
-
-
-        currentTrackUrl =
-            "";
-
-
-        currentBuffer =
-            null;
-
-
         setDisplayState(
             "NO TRACK"
         );
-
 
         return;
     }
 
 
-    currentSessionId =
-        sessionId;
+    const expected =
+        expectedPosition(
+            data
+        );
 
 
-    currentTrackUrl =
-        trackUrl;
-
-
-    const myGeneration =
-        ++loadGeneration;
-
-
-    stopCurrentSource();
-
-
-    setDisplayState(
-        "LOADING"
-    );
-
-
-    statusEl.textContent =
-        "Chargement du morceau...";
-
-
-    try
+    if (
+        sessionId === currentSessionId
+        &&
+        Number.isFinite(
+            player.duration
+        )
+        &&
+        player.duration > 0
+    )
     {
-        const buffer =
-            await getAudioBuffer(
-                trackUrl
-            );
-
-
-        if (
-            myGeneration !==
-            loadGeneration
-        )
-        {
-            return;
-        }
-
-
-        if (
-            !lastData
-            ||
-            lastData.sessionId
-            !==
-            sessionId
-        )
-        {
-            return;
-        }
-
-
-        currentBuffer =
-            buffer;
-
-
-        const position =
-            expectedPosition(
-                lastData
-            );
-
-
         positionEl.textContent =
             formatTime(
                 Math.min(
-                    position,
-                    buffer.duration
+                    expected,
+                    player.duration
                 )
             )
             +
             " / "
             +
             formatTime(
-                buffer.duration
+                player.duration
             );
 
 
         if (
-            audioUnlocked
+            expected >= player.duration
         )
         {
-            startBufferAt(
-                buffer,
-                position
+            setDisplayState(
+                "ENDED"
             );
         }
 
         else
         {
-            statusEl.textContent =
-                "Clique une fois sur Enable Audio.";
+            setDisplayState(
+                "PLAYING"
+            );
         }
+
+
+        return;
     }
 
-    catch (
-        error
-    )
-    {
-        console.error(
-            error
-        );
 
-
-        setDisplayState(
-            "NO TRACK"
-        );
-
-
-        statusEl.textContent =
-            "Erreur de chargement audio";
-    }
+    setDisplayState(
+        "PLAYING"
+    );
 }
 
 
 
-async function unlockAudio()
+function seekAndPlay(
+    position
+)
 {
-    try
-    {
-        if (
-            !audioContext
+    if (
+        !Number.isFinite(
+            player.duration
         )
-        {
-            const AudioContextClass =
-                window.AudioContext
-                ||
-                window.webkitAudioContext;
-
-
-            audioContext =
-                new AudioContextClass();
-
-
-            gainNode =
-                audioContext.createGain();
-
-
-            gainNode.gain.value =
-                0;
-
-
-            gainNode.connect(
-                audioContext.destination
-            );
-
-
-            // Petit buffer silencieux utilisé uniquement
-            // pour amorcer le moteur audio dans le geste utilisateur.
-            const silentBuffer =
-                audioContext.createBuffer(
-                    1,
-                    1,
-                    audioContext.sampleRate
-                );
-
-
-            const silentSource =
-                audioContext.createBufferSource();
-
-
-            silentSource.buffer =
-                silentBuffer;
-
-
-            silentSource.connect(
-                gainNode
-            );
-
-
-            silentSource.start();
-        }
-
-
-        await audioContext.resume();
-
-
-        if (
-            audioContext.state ===
-            "running"
-        )
-        {
-            audioUnlocked =
-                true;
-
-
-            audioUnlockButton.textContent =
-                "🔊 Audio Enabled";
-
-
-            audioUnlockMessage.textContent =
-                "Moteur audio activé. Les prochains changements doivent être automatiques.";
-
-
-            if (
-                lastData
-            )
-            {
-                const volume =
-                    clamp(
-                        Number(
-                            lastData.volume
-                        )
-                        ||
-                        0,
-
-                        0,
-                        1
-                    );
-
-
-                gainNode.gain.setValueAtTime(
-                    volume,
-                    audioContext.currentTime
-                );
-
-
-                if (
-                    currentBuffer
-                )
-                {
-                    startBufferAt(
-                        currentBuffer,
-                        expectedPosition(
-                            lastData
-                        )
-                    );
-                }
-
-                else if (
-                    lastData.sessionId
-                    &&
-                    lastData.trackUrl
-                )
-                {
-                    loadSession(
-                        lastData
-                    );
-                }
-            }
-        }
-
-        else
-        {
-            statusEl.textContent =
-                "Le viewer n'a pas autorisé Web Audio.";
-        }
-    }
-
-    catch (
-        error
+        ||
+        player.duration <= 0
     )
     {
-        console.error(
-            error
-        );
+        pendingSeek =
+            position;
+
+        return;
+    }
+
+
+    if (
+        position >= player.duration
+    )
+    {
+        player.currentTime =
+            Math.max(
+                0,
+                player.duration
+                -
+                0.05
+            );
+
+
+        player.pause();
 
 
         statusEl.textContent =
-            "Impossible d'activer Web Audio.";
+            "Session terminée";
+
+
+        return;
     }
+
+
+    player.currentTime =
+        clamp(
+            position,
+            0,
+            player.duration
+        );
+
+
+    pendingSeek =
+        null;
+
+
+    player
+        .play()
+        .catch(
+            () =>
+            {
+                statusEl.textContent =
+                    "Clique sur Play une fois pour autoriser l'audio.";
+            }
+        );
 }
 
 
 
-audioUnlockButton.addEventListener(
-    "click",
-    unlockAudio
+player.addEventListener(
+    "loadedmetadata",
+
+    () =>
+    {
+        if (
+            pendingSeek !== null
+        )
+        {
+            const target =
+                pendingSeek;
+
+
+            pendingSeek =
+                null;
+
+
+            seekAndPlay(
+                target
+            );
+        }
+
+
+        if (
+            lastData
+        )
+        {
+            updatePassiveDisplay(
+                lastData
+            );
+        }
+    }
 );
 
 
 
-function updateDisplay(
+player.addEventListener(
+    "ended",
+
+    () =>
+    {
+        setDisplayState(
+            "ENDED"
+        );
+    }
+);
+
+
+
+function switchSession(
     data
 )
 {
-    broadcasterEl.textContent =
-        data.broadcasterName
-
-        ?
-
-        decodeURIComponent(
-            data.broadcasterName
-        )
-
-        :
-
-        "NONE";
-
-
-    trackEl.textContent =
-        data.trackTitle
-
-        ?
-
-        decodeURIComponent(
-            data.trackTitle
-        )
-
-        :
-
-        "NONE";
-
-
-    zoneEl.textContent =
-        data.zone
+    currentSessionId =
+        data.sessionId
         ||
-        "NONE";
+        "";
+
+
+    const trackUrl =
+        data.trackUrl
+        ||
+        "";
+
+
+    if (
+        !trackUrl
+    )
+    {
+        player.pause();
+
+
+        player.removeAttribute(
+            "src"
+        );
+
+
+        player.load();
+
+
+        statusEl.textContent =
+            "Aucune session musicale active";
+
+
+        return;
+    }
+
+
+    const position =
+        expectedPosition(
+            data
+        );
+
+
+    pendingSeek =
+        position;
+
+
+    player.src =
+        trackUrl;
+
+
+    player.load();
+
+
+    statusEl.textContent =
+        "Changement de session...";
+}
+
+
+
+function applyState(
+    data
+)
+{
+    lastData =
+        data;
+
+
+    const volume =
+        clamp(
+            Number(
+                data.volume
+            )
+            ||
+            0,
+
+            0,
+            1
+        );
+
+
+    player.volume =
+        volume;
+
+
+    volumeEl.textContent =
+        Math.round(
+            volume
+            *
+            100
+        );
 
 
     distanceEl.textContent =
@@ -1060,39 +624,40 @@ function updateDisplay(
         "--";
 
 
-    const volume =
-        clamp(
-            Number(
-                data.volume
-            )
-            ||
-            0,
-
-            0,
-            1
-        );
+    zoneEl.textContent =
+        data.zone
+        ||
+        "NONE";
 
 
-    volumeEl.textContent =
-        Math.round(
-            volume
-            *
-            100
-        );
+    broadcasterEl.textContent =
+
+        data.broadcasterName
+
+        ?
+
+        decodeURIComponent(
+            data.broadcasterName
+        )
+
+        :
+
+        "NONE";
 
 
-    if (
-        audioContext
-        &&
-        gainNode
-    )
-    {
-        gainNode.gain.setTargetAtTime(
-            volume,
-            audioContext.currentTime,
-            0.05
-        );
-    }
+    trackEl.textContent =
+
+        data.trackTitle
+
+        ?
+
+        decodeURIComponent(
+            data.trackTitle
+        )
+
+        :
+
+        "NONE";
 
 
     const position =
@@ -1101,115 +666,10 @@ function updateDisplay(
         );
 
 
-    if (
-        currentBuffer
-    )
-    {
-        positionEl.textContent =
-            formatTime(
-                Math.min(
-                    position,
-                    currentBuffer.duration
-                )
-            )
-            +
-            " / "
-            +
-            formatTime(
-                currentBuffer.duration
-            );
-    }
-
-    else
-    {
-        positionEl.textContent =
-            formatTime(
-                position
-            );
-    }
-}
-
-
-
-function checkSynchronization(
-    data
-)
-{
-    if (
-        !audioUnlocked
-        ||
-        !audioContext
-        ||
-        !currentBuffer
-        ||
-        !currentSource
-    )
-    {
-        return;
-    }
-
-
-    if (
-        Date.now()
-        -
-        lastSyncAt
-        <
-        2000
-    )
-    {
-        return;
-    }
-
-
-    lastSyncAt =
-        Date.now();
-
-
-    const expected =
-        expectedPosition(
-            data
+    positionEl.textContent =
+        formatTime(
+            position
         );
-
-
-    const local =
-        getLocalPlaybackPosition();
-
-
-    const drift =
-        Math.abs(
-            expected
-            -
-            local
-        );
-
-
-    if (
-        drift > 2
-        &&
-        expected <
-        currentBuffer.duration
-    )
-    {
-        startBufferAt(
-            currentBuffer,
-            expected
-        );
-    }
-}
-
-
-
-function applyState(
-    data
-)
-{
-    lastData =
-        data;
-
-
-    updateDisplay(
-        data
-    );
 
 
     const sessionId =
@@ -1218,77 +678,74 @@ function applyState(
         "";
 
 
-    const trackUrl =
-        data.trackUrl
-        ||
-        "";
-
-
     if (
-        !sessionId
-        ||
-        !trackUrl
+        sessionId
+        &&
+        sessionId !== currentSessionId
+    )
+    {
+        switchSession(
+            data
+        );
+    }
+
+    else if (
+        sessionId
+        &&
+        player.src
+        &&
+        Date.now()
+        -
+        lastSyncAt
+        >
+        2000
     )
     {
         if (
-            currentSessionId
-            !==
-            ""
+            Number.isFinite(
+                player.duration
+            )
+            &&
+            position
+            <
+            player.duration
         )
         {
-            loadGeneration++;
+            const drift =
+                Math.abs(
+                    player.currentTime
+                    -
+                    position
+                );
 
 
-            stopCurrentSource();
-
-
-            currentBuffer =
-                null;
-
-
-            currentSessionId =
-                "";
-
-
-            currentTrackUrl =
-                "";
+            if (
+                drift > 2.0
+            )
+            {
+                player.currentTime =
+                    position;
+            }
         }
 
 
-        setDisplayState(
-            "NO TRACK"
-        );
-
-
-        lastGoodUpdate =
+        lastSyncAt =
             Date.now();
-
-
-        return;
     }
 
 
     if (
         sessionId
-        !==
-        currentSessionId
-        ||
-        trackUrl
-        !==
-        currentTrackUrl
     )
     {
-        loadSession(
-            data
-        );
+        statusEl.textContent =
+            "Receiver connecté — session synchronisée";
     }
 
-    else
-    {
-        checkSynchronization(
-            data
-        );
-    }
+
+    updatePassiveDisplay(
+        data
+    );
 
 
     lastGoodUpdate =
@@ -1305,6 +762,10 @@ async function refreshState()
     {
         statusEl.textContent =
             "Aucune URL Receiver reçue.";
+
+
+        player.volume =
+            0;
 
 
         return;
@@ -1365,11 +826,6 @@ async function refreshState()
         error
     )
     {
-        console.error(
-            error
-        );
-
-
         statusEl.textContent =
             "Receiver inaccessible";
 
@@ -1382,18 +838,8 @@ async function refreshState()
             2000
         )
         {
-            if (
-                gainNode
-                &&
-                audioContext
-            )
-            {
-                gainNode.gain.setTargetAtTime(
-                    0,
-                    audioContext.currentTime,
-                    0.05
-                );
-            }
+            player.volume =
+                0;
 
 
             volumeEl.textContent =
