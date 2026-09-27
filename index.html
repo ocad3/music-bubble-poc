@@ -1,20 +1,210 @@
 <!DOCTYPE html>
 <html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Music Bubble POC</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Music Bubble POC V0.2</title>
+
+<style>
+body{
+    margin:0;
+    padding:24px;
+    background:#101014;
+    color:white;
+    font-family:Arial,sans-serif;
+}
+
+h1{
+    margin-top:0;
+}
+
+.box{
+    padding:16px;
+    background:#1d1d24;
+    border-radius:12px;
+    margin-bottom:14px;
+}
+
+audio{
+    width:100%;
+}
+
+.value{
+    font-weight:bold;
+}
+
+#status{
+    opacity:.85;
+}
+</style>
 </head>
 
-<body style="background:white; color:black; font-family:Arial; padding:40px;">
+<body>
 
-    <h1>Music Bubble</h1>
-    <p>POC V0.1</p>
+<h1>Music Bubble</h1>
 
-    <audio controls>
+<div class="box">
+    <div>POC V0.2</div>
+    <div id="status">Initialisation...</div>
+</div>
+
+<div class="box">
+    <div>
+        Zone:
+        <span class="value" id="zone">NONE</span>
+    </div>
+
+    <div>
+        Distance:
+        <span class="value" id="distance">--</span> m
+    </div>
+
+    <div>
+        Volume demandé:
+        <span class="value" id="volume">0</span> %
+    </div>
+</div>
+
+<div class="box">
+    <audio id="player" controls preload="auto">
         <source src="audio-test.mp3" type="audio/mpeg">
-        Ton navigateur ne supporte pas la lecture audio.
     </audio>
+</div>
+
+<script>
+const PROXY =
+    "https://music-bubble-proxy.christelle-gourvest.workers.dev";
+
+const params =
+    new URLSearchParams(window.location.search);
+
+const receiver =
+    params.get("receiver");
+
+const player =
+    document.getElementById("player");
+
+const statusEl =
+    document.getElementById("status");
+
+const volumeEl =
+    document.getElementById("volume");
+
+const distanceEl =
+    document.getElementById("distance");
+
+const zoneEl =
+    document.getElementById("zone");
+
+let lastGoodUpdate = 0;
+
+function clamp(value, min, max)
+{
+    return Math.min(
+        Math.max(value, min),
+        max
+    );
+}
+
+function applyState(data)
+{
+    const volume =
+        clamp(
+            Number(data.volume) || 0,
+            0,
+            1
+        );
+
+    player.volume = volume;
+
+    volumeEl.textContent =
+        Math.round(volume * 100);
+
+    distanceEl.textContent =
+        Number(data.distance) >= 0
+        ? Number(data.distance).toFixed(2)
+        : "--";
+
+    zoneEl.textContent =
+        data.zone || "NONE";
+
+    statusEl.textContent =
+        "Receiver connecté";
+
+    lastGoodUpdate =
+        Date.now();
+}
+
+async function refreshVolume()
+{
+    if (!receiver)
+    {
+        statusEl.textContent =
+            "Aucune URL Receiver reçue.";
+
+        player.volume = 0;
+        return;
+    }
+
+    const target =
+        PROXY
+        + "/volume?target="
+        + encodeURIComponent(receiver);
+
+    try
+    {
+        const response =
+            await fetch(
+                target,
+                {
+                    cache: "no-store"
+                }
+            );
+
+        if (!response.ok)
+        {
+            throw new Error(
+                "HTTP " + response.status
+            );
+        }
+
+        const text =
+            await response.text();
+
+        const data =
+            JSON.parse(text);
+
+        applyState(data);
+    }
+
+    catch (error)
+    {
+        statusEl.textContent =
+            "Receiver inaccessible";
+
+        if (
+            Date.now() - lastGoodUpdate
+            > 2000
+        )
+        {
+            player.volume = 0;
+            volumeEl.textContent = "0";
+        }
+    }
+}
+
+setInterval(
+    refreshVolume,
+    500
+);
+
+refreshVolume();
+
+player.play().catch(() => {
+    statusEl.textContent =
+        "Clique sur Play une fois pour autoriser l'audio.";
+});
+</script>
 
 </body>
 </html>
