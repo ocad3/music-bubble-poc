@@ -1,6 +1,18 @@
 {
   "active": true,
-  "sessionKey": "track-002",
-  "trackTitle": "My Track",
-  "trackUrl": "https://ocad3.github.io/music-bubble-poc/audio-b.mp3"
+  "playlistKey": "alt-playlist-001",
+  "playlistStartedAt": 1790547044,
+  "loop": true,
+  "playlist": [
+    {
+      "title": "Track B - Alt",
+      "url": "https://ocad3.github.io/music-bubble-poc/audio-b.mp3",
+      "duration": 30
+    },
+    {
+      "title": "Track A - Alt",
+      "url": "https://ocad3.github.io/music-bubble-poc/audio-a.mp3",
+      "duration": 30
+    }
+  ]
 }
