@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Music Bubble POC V0.2</title>
+
+<title>Music Bubble POC V0.4</title>
 
 <style>
 body{
@@ -44,11 +45,22 @@ audio{
 <h1>Music Bubble</h1>
 
 <div class="box">
-    <div>POC V0.2</div>
+    <div>POC V0.4 — Session Sync</div>
     <div id="status">Initialisation...</div>
 </div>
 
 <div class="box">
+
+    <div>
+        Broadcaster:
+        <span class="value" id="broadcaster">NONE</span>
+    </div>
+
+    <div>
+        Track:
+        <span class="value" id="track">NONE</span>
+    </div>
+
     <div>
         Zone:
         <span class="value" id="zone">NONE</span>
@@ -60,150 +72,692 @@ audio{
     </div>
 
     <div>
-        Volume demandé:
+        Volume:
         <span class="value" id="volume">0</span> %
     </div>
+
+    <div>
+        Position cible:
+        <span class="value" id="position">--</span>
+    </div>
+
 </div>
 
 <div class="box">
-    <audio id="player" controls preload="auto">
-        <source src="audio-test.mp3" type="audio/mpeg">
+
+    <audio
+        id="player"
+        controls
+        preload="auto">
     </audio>
+
 </div>
 
+
 <script>
+
 const PROXY =
     "https://music-bubble-proxy.christelle-gourvest.workers.dev";
 
+
 const params =
-    new URLSearchParams(window.location.search);
+    new URLSearchParams(
+        window.location.search
+    );
+
 
 const receiver =
     params.get("receiver");
 
+
 const player =
-    document.getElementById("player");
+    document.getElementById(
+        "player"
+    );
+
 
 const statusEl =
-    document.getElementById("status");
+    document.getElementById(
+        "status"
+    );
 
-const volumeEl =
-    document.getElementById("volume");
 
-const distanceEl =
-    document.getElementById("distance");
+const broadcasterEl =
+    document.getElementById(
+        "broadcaster"
+    );
+
+
+const trackEl =
+    document.getElementById(
+        "track"
+    );
+
 
 const zoneEl =
-    document.getElementById("zone");
+    document.getElementById(
+        "zone"
+    );
+
+
+const distanceEl =
+    document.getElementById(
+        "distance"
+    );
+
+
+const volumeEl =
+    document.getElementById(
+        "volume"
+    );
+
+
+const positionEl =
+    document.getElementById(
+        "position"
+    );
+
+
+
+let currentSessionId = "";
+
+let pendingSeek = null;
 
 let lastGoodUpdate = 0;
 
-function clamp(value, min, max)
+let lastSyncAt = 0;
+
+
+
+function clamp(
+    value,
+    min,
+    max
+)
 {
     return Math.min(
-        Math.max(value, min),
+        Math.max(
+            value,
+            min
+        ),
         max
     );
 }
 
-function applyState(data)
+
+
+function formatTime(
+    seconds
+)
 {
+    seconds =
+        Math.max(
+            0,
+            Math.floor(
+                seconds
+            )
+        );
+
+
+    const minutes =
+        Math.floor(
+            seconds / 60
+        );
+
+
+    const remaining =
+        seconds % 60;
+
+
+    return (
+        minutes
+        +
+        ":"
+        +
+        String(
+            remaining
+        ).padStart(
+            2,
+            "0"
+        )
+    );
+}
+
+
+
+function expectedPosition(
+    data
+)
+{
+    const serverUnix =
+        Number(
+            data.serverUnix
+        )
+        ||
+        0;
+
+
+    const startedAt =
+        Number(
+            data.startedAt
+        )
+        ||
+        0;
+
+
+    if (
+        serverUnix <= 0
+        ||
+        startedAt <= 0
+    )
+    {
+        return 0;
+    }
+
+
+    return Math.max(
+        0,
+        serverUnix - startedAt
+    );
+}
+
+
+
+function seekAndPlay(
+    position
+)
+{
+
+    if (
+        !Number.isFinite(
+            player.duration
+        )
+        ||
+        player.duration <= 0
+    )
+    {
+        pendingSeek =
+            position;
+
+        return;
+    }
+
+
+    if (
+        position
+        >=
+        player.duration
+    )
+    {
+
+        player.currentTime =
+            Math.max(
+                0,
+                player.duration
+                -
+                0.05
+            );
+
+
+        player.pause();
+
+
+        statusEl.textContent =
+            "Session terminée";
+
+
+        return;
+    }
+
+
+    player.currentTime =
+        clamp(
+            position,
+            0,
+            player.duration
+        );
+
+
+    pendingSeek =
+        null;
+
+
+    player
+        .play()
+        .catch(
+            () =>
+            {
+
+                statusEl.textContent =
+                    "Clique sur Play une fois pour autoriser l'audio.";
+
+            }
+        );
+
+}
+
+
+
+player.addEventListener(
+    "loadedmetadata",
+
+    () =>
+    {
+
+        if (
+            pendingSeek !== null
+        )
+        {
+
+            const target =
+                pendingSeek;
+
+
+            pendingSeek =
+                null;
+
+
+            seekAndPlay(
+                target
+            );
+
+        }
+
+    }
+);
+
+
+
+function switchSession(
+    data
+)
+{
+
+    currentSessionId =
+        data.sessionId
+        ||
+        "";
+
+
+    const trackUrl =
+        data.trackUrl
+        ||
+        "";
+
+
+    if (
+        !trackUrl
+    )
+    {
+
+        player.pause();
+
+
+        player.removeAttribute(
+            "src"
+        );
+
+
+        player.load();
+
+
+        statusEl.textContent =
+            "Aucune session musicale active";
+
+
+        return;
+
+    }
+
+
+    const position =
+        expectedPosition(
+            data
+        );
+
+
+    pendingSeek =
+        position;
+
+
+    player.src =
+        trackUrl;
+
+
+    player.load();
+
+
+    statusEl.textContent =
+        "Changement de session...";
+
+}
+
+
+
+function applyState(
+    data
+)
+{
+
     const volume =
         clamp(
-            Number(data.volume) || 0,
+            Number(
+                data.volume
+            )
+            ||
+            0,
+
             0,
             1
         );
 
-    player.volume = volume;
+
+    player.volume =
+        volume;
+
 
     volumeEl.textContent =
-        Math.round(volume * 100);
+        Math.round(
+            volume
+            *
+            100
+        );
+
+
 
     distanceEl.textContent =
-        Number(data.distance) >= 0
-        ? Number(data.distance).toFixed(2)
-        : "--";
+
+        Number(
+            data.distance
+        )
+        >=
+        0
+
+        ?
+
+        Number(
+            data.distance
+        ).toFixed(
+            2
+        )
+
+        :
+
+        "--";
+
+
 
     zoneEl.textContent =
-        data.zone || "NONE";
+        data.zone
+        ||
+        "NONE";
 
-    statusEl.textContent =
-        "Receiver connecté";
+
+
+    broadcasterEl.textContent =
+
+        data.broadcasterName
+
+        ?
+
+        decodeURIComponent(
+            data.broadcasterName
+        )
+
+        :
+
+        "NONE";
+
+
+
+    trackEl.textContent =
+
+        data.trackTitle
+
+        ?
+
+        decodeURIComponent(
+            data.trackTitle
+        )
+
+        :
+
+        "NONE";
+
+
+
+    const position =
+        expectedPosition(
+            data
+        );
+
+
+    positionEl.textContent =
+        formatTime(
+            position
+        );
+
+
+
+    const sessionId =
+        data.sessionId
+        ||
+        "";
+
+
+
+    if (
+        sessionId
+        &&
+        sessionId
+        !==
+        currentSessionId
+    )
+    {
+
+        switchSession(
+            data
+        );
+
+    }
+
+    else if (
+        sessionId
+        &&
+        player.src
+        &&
+        Date.now()
+        -
+        lastSyncAt
+        >
+        2000
+    )
+    {
+
+        if (
+            Number.isFinite(
+                player.duration
+            )
+            &&
+            position
+            <
+            player.duration
+        )
+        {
+
+            const drift =
+                Math.abs(
+                    player.currentTime
+                    -
+                    position
+                );
+
+
+            if (
+                drift
+                >
+                2.0
+            )
+            {
+
+                player.currentTime =
+                    position;
+
+            }
+
+        }
+
+
+        lastSyncAt =
+            Date.now();
+
+    }
+
+
+
+    if (
+        sessionId
+    )
+    {
+
+        statusEl.textContent =
+            "Receiver connecté — session synchronisée";
+
+    }
+
 
     lastGoodUpdate =
         Date.now();
+
 }
 
-async function refreshVolume()
+
+
+async function refreshState()
 {
-    if (!receiver)
+
+    if (
+        !receiver
+    )
     {
+
         statusEl.textContent =
             "Aucune URL Receiver reçue.";
 
-        player.volume = 0;
+
+        player.volume =
+            0;
+
+
         return;
+
     }
+
+
 
     const target =
         PROXY
-        + "/volume?target="
-        + encodeURIComponent(receiver);
+        +
+        "/volume?target="
+        +
+        encodeURIComponent(
+            receiver
+        );
+
+
 
     try
     {
+
         const response =
             await fetch(
                 target,
                 {
-                    cache: "no-store"
+                    cache:
+                        "no-store"
                 }
             );
 
-        if (!response.ok)
+
+
+        if (
+            !response.ok
+        )
         {
+
             throw new Error(
-                "HTTP " + response.status
+                "HTTP "
+                +
+                response.status
             );
+
         }
+
+
 
         const text =
             await response.text();
 
-        const data =
-            JSON.parse(text);
 
-        applyState(data);
+
+        const data =
+            JSON.parse(
+                text
+            );
+
+
+
+        applyState(
+            data
+        );
+
     }
 
-    catch (error)
+
+
+    catch (
+        error
+    )
     {
+
         statusEl.textContent =
             "Receiver inaccessible";
 
+
+
         if (
-            Date.now() - lastGoodUpdate
-            > 2000
+            Date.now()
+            -
+            lastGoodUpdate
+            >
+            2000
         )
         {
-            player.volume = 0;
-            volumeEl.textContent = "0";
+
+            player.volume =
+                0;
+
+
+            volumeEl.textContent =
+                "0";
+
         }
+
     }
+
 }
 
+
+
 setInterval(
-    refreshVolume,
+    refreshState,
     500
 );
 
-refreshVolume();
 
-player.play().catch(() => {
-    statusEl.textContent =
-        "Clique sur Play une fois pour autoriser l'audio.";
-});
+
+refreshState();
+
 </script>
 
 </body>
